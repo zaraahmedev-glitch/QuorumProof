@@ -1,12 +1,14 @@
 /**
- * Session Manager Service — Issue #1300
+ * Session Manager Service — Issue #1300, #1365
  *
  * Manages JWT-based sessions with expiry, refresh tokens, and revocation.
+ * Session and revocation state is persisted via DurableLog so revocations are
+ * immediately visible across all instances in a load-balanced deployment.
  *
  * Design decisions:
  *  - Access tokens expire in 1 hour (configurable via SESSION_ACCESS_TTL_SECONDS).
  *  - Refresh tokens expire in 7 days (configurable via SESSION_REFRESH_TTL_SECONDS).
- *  - Sessions are tracked in-memory (Map) per-user so we can enumerate and revoke them.
+ *  - Sessions are tracked via DurableLog (durable JSONL) for multi-instance safety.
  *  - JWT signing uses HMAC-SHA256 with a secret from JWT_SECRET env var.
  *  - No external JWT library is needed — we implement compact JWT signing here
  *    using Node's built-in `crypto` module.
@@ -15,6 +17,8 @@
  */
 
 import crypto from 'crypto';
+import path from 'path';
+import { DurableLog } from './durableLog.js';
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -123,9 +127,19 @@ export interface TokenPair {
 // ---------------------------------------------------------------------------
 // SessionManager
 // ---------------------------------------------------------------------------
+export interface SessionManagerOptions {
+  dataDir?: string;
+}
+
 export class SessionManager {
-  /** sessionId → Session */
-  private readonly sessions = new Map<string, Session>();
+  readonly dataDir: string;
+  private readonly sessions: DurableLog<Session>;
+
+  constructor(options: SessionManagerOptions = {}) {
+    const dataDir = options.dataDir ?? process.env.SESSION_STORE_DATA_DIR ?? path.join(process.cwd(), '.data', 'sessions');
+    this.dataDir = dataDir;
+    this.sessions = new DurableLog<Session>(path.join(dataDir, 'sessions.jsonl'));
+  }
 
   /**
    * Create a new session and return a token pair.
@@ -216,7 +230,7 @@ export class SessionManager {
     existingSession.revokedAt = new Date().toISOString();
     this.sessions.set(existingSession.sessionId, existingSession);
 
-    // Issue a new session
+    // Issue a new session — pass mfaVerified, role, and preserveMfaVerified flag
     return this.createSession(payload.sub, {
       mfaVerified: existingSession.mfaVerified,
       role: existingSession.role,
@@ -301,12 +315,14 @@ export class SessionManager {
 
   /** For testing only. */
   _resetForTest(): void {
-    this.sessions.clear();
+    for (const key of this.sessions.keys()) {
+      this.sessions.delete(key);
+    }
     _jwtSecret = undefined;
   }
 
   /** Expose for tests. */
-  get _store(): Map<string, Session> {
+  get _store(): DurableLog<Session> {
     return this.sessions;
   }
 }
@@ -316,6 +332,10 @@ let defaultSessionManager: SessionManager | undefined;
 export function getDefaultSessionManager(): SessionManager {
   if (!defaultSessionManager) defaultSessionManager = new SessionManager();
   return defaultSessionManager;
+}
+
+export function _resetDefaultSessionManagerForTest(): void {
+  defaultSessionManager = undefined;
 }
 
 export function _setDefaultSessionManagerForTest(mgr: SessionManager | undefined): void {

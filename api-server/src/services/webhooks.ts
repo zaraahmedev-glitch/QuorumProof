@@ -137,6 +137,7 @@ export class WebhookService {
       record.error = 'webhook registration no longer exists';
       record.completedAt = new Date().toISOString();
       this.store.saveDelivery(record);
+      console.error(`[webhook] delivery ${record.id} dead-lettered: webhook registration no longer exists`);
       return;
     }
 
@@ -185,6 +186,7 @@ export class WebhookService {
     record.status = 'dead_letter';
     record.completedAt = new Date().toISOString();
     this.store.saveDelivery(record);
+    console.error(`[webhook] delivery ${record.id} dead-lettered after ${record.attempts} attempts: ${record.error}`);
   }
 
   /** Wait for all currently-queued deliveries to reach a terminal state — test helper. */

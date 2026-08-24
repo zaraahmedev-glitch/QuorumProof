@@ -49,7 +49,8 @@ import { getSubscriberCount } from './ws/subscriptions.js';
 import { getWsMetrics, getWsMetricsPrometheus } from './ws/metrics.js';
 import { getDefaultRpcCircuitBreaker } from './services/rpcCircuitBreaker.js';
 import { getDefaultCriticalEventListener } from './services/criticalEventListener.js';
-import { broadcastEvent, getConnectionCount, closeWsServer } from './ws/server.js';
+import { broadcastEvent as _wsServerBroadcastEvent, getConnectionCount, closeWsServer } from './ws/server.js';
+import { dispatchWebhookEvent } from './services/webhooks.js';
 import { createGracefulShutdown } from './services/gracefulShutdown.js';
 import * as Soroban from './soroban.js';
 
@@ -289,14 +290,9 @@ async function runStartupMigrations(): Promise<void> {
   process.once('SIGINT', () => { void shutdown('SIGINT'); });
 })();
 
-export { broadcastEvent };
-
 // #926: fire webhooks for credential events alongside WS broadcast
-// TODO: Implement webhook dispatch when dispatchWebhookEvent is available
-/*
-const _origBroadcast = broadcastEvent;
-function broadcastEventWithWebhooks(...args: Parameters<typeof _origBroadcast>) {
-  const result = _origBroadcast(...args);
+function broadcastEvent(...args: Parameters<typeof _wsServerBroadcastEvent>) {
+  const result = _wsServerBroadcastEvent(...args);
   const [event] = args;
   const webhookEvents = ['credential_issued', 'credential_attested', 'credential_revoked'] as const;
   if (webhookEvents.includes(event.type as typeof webhookEvents[number])) {
@@ -311,7 +307,6 @@ function broadcastEventWithWebhooks(...args: Parameters<typeof _origBroadcast>) 
   }
   return result;
 }
-*/
 
-export { broadcastEventWithWebhooks as broadcastEventAndWebhooks };
+export { broadcastEvent };
 export default app;

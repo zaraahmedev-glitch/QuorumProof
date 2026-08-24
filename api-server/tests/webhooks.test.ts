@@ -8,6 +8,7 @@ import webhooksRouter from '../src/routes/webhooks.js';
 import {
   _configureForTest,
   _drainForTest,
+  deleteWebhook,
   dispatchWebhookEvent,
   getDeliveryLog,
   listDeadLetters,
@@ -486,6 +487,146 @@ describe('circuit breaker integration with delivery', () => {
 
     const secondRecord = getDeliveryLog().find(d => d.credentialId === 2);
     expect(secondRecord?.status).toBe('success');
+  });
+});
+
+// ── Integration: broadcastEvent wiring ──────────────────────────────────────────
+
+describe('webhook integration with broadcastEvent', () => {
+  it('fires webhook on credential_issued event via broadcastEvent', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    registerWebhook('https://example.com/hook', ['credential_issued']);
+
+    const { broadcastEvent } = await import('../src/index.js');
+    broadcastEvent({
+      type: 'credential_issued',
+      credential_id: 42,
+      issuer: 'GABC123',
+      holder: 'GXYZ789',
+      timestamp: new Date().toISOString(),
+    });
+    await _drainForTest();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [url, opts] = fetchMock.mock.calls[0];
+    expect(url).toBe('https://example.com/hook');
+    const body = JSON.parse(opts.body);
+    expect(body.event).toBe('credential_issued');
+    expect(body.credential_id).toBe(42);
+  });
+
+  it('does not fire webhook for credential_revoked when registered for credential_issued', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    registerWebhook('https://example.com/hook', ['credential_issued']);
+
+    const { broadcastEvent } = await import('../src/index.js');
+    broadcastEvent({
+      type: 'credential_revoked',
+      credential_id: 42,
+      issuer: 'GABC123',
+      timestamp: new Date().toISOString(),
+    });
+    await _drainForTest();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('stops firing webhooks after deletion', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    const reg = registerWebhook('https://example.com/hook', ['credential_revoked']);
+
+    const { broadcastEvent } = await import('../src/index.js');
+    broadcastEvent({
+      type: 'credential_revoked',
+      credential_id: 1,
+      timestamp: new Date().toISOString(),
+    });
+    await _drainForTest();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    fetchMock.mockClear();
+
+    const deleted = deleteWebhook(reg.id);
+    expect(deleted).toBe(true);
+
+    broadcastEvent({
+      type: 'credential_revoked',
+      credential_id: 2,
+      timestamp: new Date().toISOString(),
+    });
+    await _drainForTest();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('fires webhook on credential_attested event', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    registerWebhook('https://example.com/hook', ['credential_attested']);
+
+    const { broadcastEvent } = await import('../src/index.js');
+    broadcastEvent({
+      type: 'credential_attested',
+      credential_id: 99,
+      attestor: 'GATT456',
+      timestamp: new Date().toISOString(),
+    });
+    await _drainForTest();
+
+    expect(fetchMock).toHaveBeenCalledOnce();
+    const [, opts] = fetchMock.mock.calls[0];
+    const body = JSON.parse(opts.body);
+    expect(body.event).toBe('credential_attested');
+    expect(body.credential_id).toBe(99);
+    expect(body.attestor).toBe('GATT456');
+  });
+
+  it('does not fire webhook for events not registered', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true });
+    vi.stubGlobal('fetch', fetchMock);
+
+    registerWebhook('https://example.com/hook', ['credential_issued']);
+
+    const { broadcastEvent } = await import('../src/index.js');
+    broadcastEvent({
+      type: 'credential_attested',
+      credential_id: 1,
+      timestamp: new Date().toISOString(),
+    });
+    await _drainForTest();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('still broadcasts to WS clients even when webhook dispatch fails', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new Error('endpoint down'));
+    vi.stubGlobal('fetch', fetchMock);
+
+    registerWebhook('https://dead.endpoint', ['credential_issued']);
+
+    const { broadcastEvent } = await import('../src/index.js');
+    const result = broadcastEvent({
+      type: 'credential_issued',
+      credential_id: 123,
+      timestamp: new Date().toISOString(),
+    });
+
+    // broadcastEvent returns the WS recipient count — should work regardless of webhook failure
+    expect(typeof result).toBe('number');
+
+    await _drainForTest();
+
+    // Webhook delivery should have failed
+    const log = getDeliveryLog();
+    expect(log).toHaveLength(1);
+    expect(log[0].status).toBe('dead_letter');
   });
 });
 

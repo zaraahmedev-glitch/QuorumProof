@@ -11,6 +11,10 @@ vi.mock('@stellar/freighter-api', () => ({
   setAllowed: vi.fn().mockResolvedValue(undefined),
 }));
 
+vi.mock('../../wallets/registry', () => ({
+  detectAvailableWallets: vi.fn().mockResolvedValue(['freighter']),
+}));
+
 const TestComponent = () => {
   const { address, isConnected, error, disconnect } = useWallet();
   return (
